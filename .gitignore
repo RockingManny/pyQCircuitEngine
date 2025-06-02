@@ -116,3 +116,7 @@ Desktop.ini
 # Output directories
 output/
 results/
+
+# tests
+*/test.*
+*/main.py

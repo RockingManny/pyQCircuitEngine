@@ -22,8 +22,9 @@ from qiskit_ibm_runtime import QiskitRuntimeService, SamplerV2 as Sampler
 from qiskit.circuit.library import RYGate, RXGate, RZGate
 from qiskit.visualization import plot_histogram
 import matplotlib.pyplot as plt
+import numpy as np
 
-# Abstract Base Class (unchanged from previous implementation)
+# Abstract Base Class
 class QuantumCircuitBase(ABC):
     """Abstract base class for quantum circuit implementations."""
     
@@ -37,8 +38,8 @@ class QuantumCircuitBase(ABC):
         """
         self.num_qubits = num_qubits
         self.shots = shots
-        self.circuit = None
-        self.results = None
+        self.circuits = []  # Changed to list to hold multiple circuits
+        self.results_list = []  # Changed to list to hold multiple results
         self.runtimes = {}
         self.backend = self._setup_backend()
 
@@ -47,19 +48,19 @@ class QuantumCircuitBase(ABC):
         """Set up the backend for circuit execution."""
         pass
 
-    def initialize_circuit(self, gates=None, circuit_type='bell'):
+    def initialize_circuit(self, gates=None, circuit_type='bell', r_rotation_parameter_shift=False):
         """
-        Initialize a quantum circuit based on input parameters.
+        Initialize quantum circuits based on input parameters.
         
         Args:
             gates (list): List of tuples specifying gates, e.g., [('h', 0), ('cx', 0, 1)].
                          If None, uses circuit_type to determine default gates.
-            circuit_type (str): Type of default circuit ('bell' for Bell state, 'uniform' for all states).
+            circuit_type (str): Type of default circuit ('bell' or 'uniform').
+            r_rotation_parameter_shift (bool): If True, create circuits with parameter shifts.
         
-        Time Complexity: O(g) where g is the number of gates.
+        Time Complexity: O(g * c) where g is the number of gates, c is the number of circuits (1 or 3).
         """
         start_time = time.time()
-        self.circuit = QuantumCircuit(self.num_qubits, self.num_qubits, name="quantum_circuit")
         
         if gates is None:
             if circuit_type == 'bell':
@@ -69,59 +70,84 @@ class QuantumCircuitBase(ABC):
             else:
                 raise ValueError("Invalid circuit_type. Use 'bell' or 'uniform'.")
         
+        if r_rotation_parameter_shift:
+            # Create three circuits: original, +π/2 shift, -π/2 shift
+            self.circuits = [
+                self._build_circuit(gates),
+                self._build_circuit(self._shift_gates(gates, np.pi / 2)),
+                self._build_circuit(self._shift_gates(gates, -np.pi / 2))
+            ]
+        else:
+            # Create a single circuit with original parameters
+            self.circuits = [self._build_circuit(gates)]
+        
+        self.runtimes['initialize_circuit'] = time.time() - start_time
+        return self.circuits
+
+    def _build_circuit(self, gates):
+        """Helper method to build a quantum circuit from a gates list."""
+        circuit = QuantumCircuit(self.num_qubits, self.num_qubits, name="quantum_circuit")
         for gate in gates:
             gate_type, *params = gate
             if gate_type == 'h':
-                self.circuit.h(params[0])
+                circuit.h(params[0])
             elif gate_type == 'cx':
-                self.circuit.cx(params[0], params[1])
+                circuit.cx(params[0], params[1])
             elif gate_type == 'ry':
-                qubit = params[0]
-                theta = params[1]
-                self.circuit.append(RYGate(theta), [qubit])
+                qubit, theta = params
+                circuit.append(RYGate(theta), [qubit])
             elif gate_type == 'rz':
-                qubit = params[0]
-                theta = params[1]
-                self.circuit.append(RZGate(theta), [qubit])
+                qubit, theta = params
+                circuit.append(RZGate(theta), [qubit])
             elif gate_type == 'rx':
-                qubit = params[0]
-                theta = params[1]
-                self.circuit.append(RXGate(theta), [qubit])
+                qubit, theta = params
+                circuit.append(RXGate(theta), [qubit])
             elif gate_type == 'x':
-                self.circuit.x(params[0])
+                circuit.x(params[0])
             else:
                 raise ValueError(f"Unsupported gate type: {gate_type}")
-        
-        self.circuit.measure(range(self.num_qubits), range(self.num_qubits))
-        
-        self.runtimes['initialize_circuit'] = time.time() - start_time
-        return self.circuit
+        circuit.measure(range(self.num_qubits), range(self.num_qubits))
+        return circuit
+
+    def _shift_gates(self, gates, shift):
+        """Shift the theta parameters of rotation gates by a specified value."""
+        shifted_gates = []
+        for gate in gates:
+            gate_type, *params = gate
+            if gate_type in {'ry', 'rz', 'rx'}:
+                qubit, theta = params
+                shifted_gates.append((gate_type, qubit, theta + shift))
+            else:
+                shifted_gates.append(gate)
+        return shifted_gates
 
     @abstractmethod
     def run_circuit(self):
-        """Execute the circuit on the backend."""
+        """Execute the circuits on the backend."""
         pass
 
     def visualize_circuit(self, filename='circuit.png'):
         """
-        Visualize the quantum circuit and save it as an image.
+        Visualize the quantum circuits and save them as images.
         
-        Time Complexity: O(g) where g is the number of gates (rendering complexity).
+        Time Complexity: O(g * c) where g is gates, c is number of circuits.
         """
-        if self.circuit is None:
-            raise ValueError("Circuit not initialized. Call initialize_circuit first.")
+        if not self.circuits:
+            raise ValueError("Circuits not initialized. Call initialize_circuit first.")
         
         start_time = time.time()
         dir_path = os.path.dirname(filename)
         if dir_path and not os.path.exists(dir_path):
             os.makedirs(dir_path, exist_ok=True)
-        self.circuit.draw(output='mpl', filename=filename)
+        for i, circuit in enumerate(self.circuits):
+            circuit_filename = f"{filename.rsplit('.', 1)[0]}_{i}.png"
+            circuit.draw(output='mpl', filename=circuit_filename)
         self.runtimes['visualize_circuit'] = time.time() - start_time
-        print(f"Circuit visualization saved as {filename}")
+        print(f"Circuit visualizations saved with base name {filename}")
 
     @abstractmethod
     def visualize_results(self, filename):
-        """Visualize the execution results as a histogram."""
+        """Visualize the execution results as histograms."""
         pass
 
     def get_time_complexity(self):
@@ -131,11 +157,12 @@ class QuantumCircuitBase(ABC):
         Returns:
             dict: Time complexities for each component.
         """
+        num_circuits = len(self.circuits) if self.circuits else 1
         return {
-            'initialize_circuit': f"O(g) where g is the number of gates ({len(self.circuit.data) if self.circuit else 'N/A'})",
-            'run_circuit': f"O(s * n) where s is shots ({self.shots}) and n is qubits ({self.num_qubits})",
-            'visualize_circuit': f"O(g) where g is the number of gates ({len(self.circuit.data) if self.circuit else 'N/A'})",
-            'visualize_results': f"O(m) where m is the number of unique outcomes"
+            'initialize_circuit': f"O(g * c) where g is gates ({len(self.circuits[0].data) if self.circuits else 'N/A'}), c is circuits ({num_circuits})",
+            'run_circuit': f"O(s * n * c) where s is shots ({self.shots}), n is qubits ({self.num_qubits}), c is circuits ({num_circuits})",
+            'visualize_circuit': f"O(g * c) where g is gates, c is circuits ({num_circuits})",
+            'visualize_results': f"O(m * c) where m is unique outcomes, c is circuits ({num_circuits})"
         }
     
     def get_runtimes(self):
@@ -147,66 +174,55 @@ class QuantumCircuitBase(ABC):
         """
         return self.runtimes
 
-# QASM Simulator Implementation (unchanged)
+# QASM Simulator Implementation
 class QASMSimulatorCircuit(QuantumCircuitBase):
     """Quantum circuit implementation using Qiskit Aer simulator."""
     
     def _setup_backend(self):
-        """
-        Set up the AerSimulator backend.
-        
-        Returns:
-            AerSimulator: Configured simulator backend.
-        """
+        """Set up the AerSimulator backend."""
         return AerSimulator(method='automatic')
 
     def run_circuit(self):
         """
-        Execute the circuit on the QASM simulator.
+        Execute the circuits on the QASM simulator.
         
-        Time Complexity: O(s * n) where s is shots and n is number of qubits (simplified).
+        Time Complexity: O(s * n * c) where s is shots, n is qubits, c is circuits.
         """
-        if self.circuit is None:
-            raise ValueError("Circuit not initialized. Call initialize_circuit first.")
+        if not self.circuits:
+            raise ValueError("Circuits not initialized. Call initialize_circuit first.")
         
         start_time = time.time()
-        self.results = self.backend.run(self.circuit, shots=self.shots).result()
+        self.results_list = [self.backend.run(circuit, shots=self.shots).result() for circuit in self.circuits]
         self.runtimes['run_circuit'] = time.time() - start_time
-        return self.results
+        return self.results_list
     
     def visualize_results(self, filename='qasm_results.png'):
         """
-        Visualize the simulation results as a histogram.
+        Visualize the simulation results as histograms.
         
-        Time Complexity: O(m) where m is the number of unique measurement outcomes.
+        Time Complexity: O(m * c) where m is unique outcomes, c is circuits.
         """
-        if self.results is None:
+        if not self.results_list:
             raise ValueError("No results available. Call run_circuit first.")
         
         start_time = time.time()
-        counts = self.results.get_counts()
         dir_path = os.path.dirname(filename)
         if dir_path and not os.path.exists(dir_path):
             os.makedirs(dir_path, exist_ok=True)
-        plot_histogram(counts).savefig(filename)
-        plt.close()
+        for i, result in enumerate(self.results_list):
+            counts = result.get_counts()
+            result_filename = f"{filename.rsplit('.', 1)[0]}_{i}.png"
+            plot_histogram(counts).savefig(result_filename)
+            plt.close()
         self.runtimes['visualize_results'] = time.time() - start_time
-        print(f"Results histogram saved as {filename}")
+        print(f"Results histograms saved with base name {filename}")
 
-# IBM Quantum Implementation (unchanged)
+# IBM Quantum Implementation
 class IBMQuantumCircuit(QuantumCircuitBase):
     """Quantum circuit implementation using IBM Quantum backend."""
     
     def __init__(self, num_qubits=2, backend_name=None, shots=1024, api_token=None):
-        """
-        Initialize the IBM Quantum circuit class.
-        
-        Args:
-            num_qubits (int): Number of qubits for the circuit (default: 2).
-            backend_name (str): Name of the IBM Quantum backend (default: None, selects least busy).
-            shots (int): Number of shots for execution (default: 1024).
-            api_token (str): IBM Quantum API token (required).
-        """
+        """Initialize the IBM Quantum circuit class."""
         if api_token is None:
             raise ValueError("IBM Quantum API token is required.")
         self.api_token = api_token
@@ -214,12 +230,7 @@ class IBMQuantumCircuit(QuantumCircuitBase):
         super().__init__(num_qubits, shots)
 
     def _setup_backend(self):
-        """
-        Set up the IBM Quantum backend.
-        
-        Returns:
-            Backend: Configured IBM Quantum backend.
-        """
+        """Set up the IBM Quantum backend."""
         service = QiskitRuntimeService(channel="ibm_quantum", token=self.api_token)
         if self.backend_name:
             return service.backend(self.backend_name)
@@ -231,26 +242,23 @@ class IBMQuantumCircuit(QuantumCircuitBase):
 
     def run_circuit(self):
         """
-        Execute the circuit on the IBM Quantum backend using the Sampler primitive.
+        Execute the circuits on the IBM Quantum backend using Sampler.
         
-        Time Complexity: O(s * n) where s is shots and n is qubits (simplified, excludes queue time).
+        Time Complexity: O(s * n * c) where s is shots, n is qubits, c is circuits.
         """
-        if self.circuit is None:
-            raise ValueError("Circuit not initialized. Call initialize_circuit first.")
+        if not self.circuits:
+            raise ValueError("Circuits not initialized. Call initialize_circuit first.")
         
         start_time = time.time()
         try:
-            transpiled_circuit = transpile(
-                self.circuit,
-                backend=self.backend,
-                optimization_level=1
-            )
+            transpiled_circuits = transpile(self.circuits, backend=self.backend, optimization_level=1)
             sampler = Sampler(backend=self.backend)
-            job = sampler.run([(transpiled_circuit,)], shots=self.shots)
+            pubs = [(circuit,) for circuit in transpiled_circuits]
+            job = sampler.run(pubs, shots=self.shots)
             print(f"Job submitted: {job.job_id()}")
-            self.results = job.result()
+            self.results_list = job.result()
             self.runtimes['run_circuit'] = time.time() - start_time
-            return self.results
+            return self.results_list
         except Exception as e:
             print(f"Error running job: {e}")
             self.runtimes['run_circuit'] = time.time() - start_time
@@ -258,23 +266,25 @@ class IBMQuantumCircuit(QuantumCircuitBase):
     
     def visualize_results(self, filename='ibm_results.png'):
         """
-        Visualize the execution results as a histogram.
+        Visualize the execution results as histograms.
         
-        Time Complexity: O(m) where m is the number of unique measurement outcomes.
+        Time Complexity: O(m * c) where m is unique outcomes, c is circuits.
         """
-        if self.results is None:
+        if not self.results_list:
             raise ValueError("No results available. Call run_circuit first.")
         
         start_time = time.time()
         try:
-            counts = self.results[0].data.c.get_counts()
             dir_path = os.path.dirname(filename)
             if dir_path and not os.path.exists(dir_path):
                 os.makedirs(dir_path, exist_ok=True)
-            plot_histogram(counts).savefig(filename)
-            plt.close()
+            for i, result in enumerate(self.results_list):
+                counts = result.data.c.get_counts()
+                result_filename = f"{filename.rsplit('.', 1)[0]}_{i}.png"
+                plot_histogram(counts).savefig(result_filename)
+                plt.close()
             self.runtimes['visualize_results'] = time.time() - start_time
-            print(f"Results histogram saved as {filename}")
+            print(f"Results histograms saved with base name {filename}")
         except Exception as e:
             print(f"Error visualizing results: {e}")
             self.runtimes['visualize_results'] = time.time() - start_time
@@ -282,31 +292,17 @@ class IBMQuantumCircuit(QuantumCircuitBase):
 
 # Final Class for User Interaction
 class QuantumCircuitRunner:
-    """Class to run quantum circuits on simulator or IBM Quantum backend with user customization."""
+    """Class to run quantum circuits on simulator or IBM Quantum backend."""
     
     def __init__(self, platform, num_qubits=2, shots=1024, circuit_type='bell', gates=None, 
-                 filename_prefix='quantum', api_token=None, backend_name=None):
-        """
-        Initialize the quantum circuit runner.
-        
-        Args:
-            platform (str): Execution platform ('simulator' or 'ibm_quantum').
-            num_qubits (int): Number of qubits (default: 2).
-            shots (int): Number of shots (default: 1024).
-            circuit_type (str): Circuit type ('bell', 'uniform') if gates is None (default: 'bell').
-            gates (list): Custom gates as tuples, e.g., [('h', 0), ('cx', 0, 1)] (default: None).
-            filename_prefix (str): Prefix for output files (default: 'quantum').
-            api_token (str): IBM Quantum API token (required for ibm_quantum).
-            backend_name (str): IBM Quantum backend name (default: None, selects least busy).
-        
-        Raises:
-            ValueError: If invalid inputs are provided.
-        """
+                 r_rotation_parameter_shift=False, filename_prefix='quantum', api_token=None, backend_name=None):
+        """Initialize the quantum circuit runner."""
         self.platform = platform.lower()
         self.num_qubits = num_qubits
         self.shots = shots
         self.circuit_type = circuit_type.lower()
         self.gates = gates
+        self.r_rotation_parameter_shift = r_rotation_parameter_shift
         self.filename_prefix = filename_prefix
         self.api_token = api_token
         self.backend_name = backend_name
@@ -318,19 +314,14 @@ class QuantumCircuitRunner:
         """Validate user inputs."""
         if self.platform not in ['simulator', 'ibm_quantum']:
             raise ValueError("Platform must be 'simulator' or 'ibm_quantum'.")
-        
         if self.platform == 'ibm_quantum' and not self.api_token:
             raise ValueError("API token is required for IBM Quantum platform.")
-        
         if not isinstance(self.num_qubits, int) or self.num_qubits < 1:
             raise ValueError("Number of qubits must be a positive integer.")
-        
         if not isinstance(self.shots, int) or self.shots < 1:
             raise ValueError("Number of shots must be a positive integer.")
-        
         if self.gates is None and self.circuit_type not in ['bell', 'uniform']:
             raise ValueError("Circuit type must be 'bell' or 'uniform' when gates is None.")
-        
         if self.gates:
             valid_gates = {'h', 'cx', 'ry', 'rz', 'rx', 'x'}
             for gate in self.gates:
@@ -343,18 +334,18 @@ class QuantumCircuitRunner:
                     if len(params) != 1:
                         raise ValueError(f"{gate_type} gate requires exactly one qubit.")
                     if any(not isinstance(q, int) or q < 0 or q >= self.num_qubits for q in params):
-                        raise ValueError(f"Qubit indices must be integers between 0 and {self.num_qubits-1}.")
+                        raise ValueError(f"Qubit indices must be between 0 and {self.num_qubits-1}.")
                 elif gate_type == 'cx':
                     if len(params) != 2:
                         raise ValueError("CNOT gate requires exactly two qubits.")
                     if any(not isinstance(q, int) or q < 0 or q >= self.num_qubits for q in params):
-                        raise ValueError(f"Qubit indices must be integers between 0 and {self.num_qubits-1}.")
+                        raise ValueError(f"Qubit indices must be between 0 and {self.num_qubits-1}.")
                 elif gate_type in {'ry', 'rz', 'rx'}:
                     if len(params) != 2:
                         raise ValueError(f"{gate_type} gate requires a qubit and a theta parameter.")
                     qubit, theta = params
                     if not isinstance(qubit, int) or qubit < 0 or qubit >= self.num_qubits:
-                        raise ValueError(f"Qubit index must be an integer between 0 and {self.num_qubits-1}.")
+                        raise ValueError(f"Qubit index must be between 0 and {self.num_qubits-1}.")
                     if not (isinstance(theta, float) or isinstance(theta, int)):
                         raise ValueError("Theta parameter must be a number.")
 
@@ -372,25 +363,26 @@ class QuantumCircuitRunner:
 
     def run(self):
         """
-        Run the quantum circuit based on user configuration.
+        Run the quantum circuits based on user configuration.
         
         Returns:
-            dict: Results including circuit instance, time complexities, and runtimes.
-        
-        Raises:
-            RuntimeError: If circuit execution fails.
+            dict: Results including circuits, results list, complexities, and runtimes.
         """
         try:
             self.circuit_instance = self._create_circuit_instance()
             
-            # Initialize circuit
-            self.circuit_instance.initialize_circuit(gates=self.gates, circuit_type=self.circuit_type)
+            # Initialize circuits
+            self.circuit_instance.initialize_circuit(
+                gates=self.gates,
+                circuit_type=self.circuit_type,
+                r_rotation_parameter_shift=self.r_rotation_parameter_shift
+            )
             
-            # Visualize circuit
+            # Visualize circuits
             circuit_filename = f"results/{self.filename_prefix}_circuit.png"
             self.circuit_instance.visualize_circuit(circuit_filename)
             
-            # Run circuit
+            # Run circuits
             self.circuit_instance.run_circuit()
             
             # Visualize results
@@ -399,11 +391,10 @@ class QuantumCircuitRunner:
             
             # Collect results
             return {
-                'circuit_instance': self.circuit_instance,
+                'results_list': self.circuit_instance.results_list,
+                'circuits': self.circuit_instance.circuits,
                 'time_complexities': self.circuit_instance.get_time_complexity(),
                 'runtimes': self.circuit_instance.get_runtimes()
             }
-        
         except Exception as e:
             raise RuntimeError(f"Failed to run circuit: {str(e)}")
-
