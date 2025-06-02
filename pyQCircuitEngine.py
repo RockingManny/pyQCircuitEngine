@@ -19,6 +19,7 @@ from qiskit import QuantumCircuit
 from qiskit_aer import AerSimulator
 from qiskit import transpile
 from qiskit_ibm_runtime import QiskitRuntimeService, SamplerV2 as Sampler
+from qiskit.circuit.library import RYGate, RXGate, RZGate
 from qiskit.visualization import plot_histogram
 import matplotlib.pyplot as plt
 
@@ -69,11 +70,27 @@ class QuantumCircuitBase(ABC):
                 raise ValueError("Invalid circuit_type. Use 'bell' or 'uniform'.")
         
         for gate in gates:
-            gate_type, *qubits = gate
+            gate_type, *params = gate
             if gate_type == 'h':
-                self.circuit.h(qubits[0])
+                self.circuit.h(params[0])
             elif gate_type == 'cx':
-                self.circuit.cx(qubits[0], qubits[1])
+                self.circuit.cx(params[0], params[1])
+            elif gate_type == 'ry':
+                qubit = params[0]
+                theta = params[1]
+                self.circuit.append(RYGate(theta), [qubit])
+            elif gate_type == 'rz':
+                qubit = params[0]
+                theta = params[1]
+                self.circuit.append(RZGate(theta), [qubit])
+            elif gate_type == 'rx':
+                qubit = params[0]
+                theta = params[1]
+                self.circuit.append(RXGate(theta), [qubit])
+            elif gate_type == 'x':
+                self.circuit.x(params[0])
+            else:
+                raise ValueError(f"Unsupported gate type: {gate_type}")
         
         self.circuit.measure(range(self.num_qubits), range(self.num_qubits))
         
@@ -315,19 +332,31 @@ class QuantumCircuitRunner:
             raise ValueError("Circuit type must be 'bell' or 'uniform' when gates is None.")
         
         if self.gates:
-            valid_gates = {'h', 'cx'}
+            valid_gates = {'h', 'cx', 'ry', 'rz', 'rx', 'x'}
             for gate in self.gates:
                 if not isinstance(gate, tuple) or len(gate) < 2:
                     raise ValueError("Each gate must be a tuple, e.g., ('h', 0) or ('cx', 0, 1).")
-                gate_type, *qubits = gate
+                gate_type, *params = gate
                 if gate_type not in valid_gates:
                     raise ValueError(f"Gate type '{gate_type}' not supported. Use {valid_gates}.")
-                if any(not isinstance(q, int) or q < 0 or q >= self.num_qubits for q in qubits):
-                    raise ValueError(f"Qubit indices must be integers between 0 and {self.num_qubits-1}.")
-                if gate_type == 'h' and len(qubits) != 1:
-                    raise ValueError("Hadamard gate requires exactly one qubit.")
-                if gate_type == 'cx' and len(qubits) != 2:
-                    raise ValueError("CNOT gate requires exactly two qubits.")
+                if gate_type in {'h', 'x'}:
+                    if len(params) != 1:
+                        raise ValueError(f"{gate_type} gate requires exactly one qubit.")
+                    if any(not isinstance(q, int) or q < 0 or q >= self.num_qubits for q in params):
+                        raise ValueError(f"Qubit indices must be integers between 0 and {self.num_qubits-1}.")
+                elif gate_type == 'cx':
+                    if len(params) != 2:
+                        raise ValueError("CNOT gate requires exactly two qubits.")
+                    if any(not isinstance(q, int) or q < 0 or q >= self.num_qubits for q in params):
+                        raise ValueError(f"Qubit indices must be integers between 0 and {self.num_qubits-1}.")
+                elif gate_type in {'ry', 'rz', 'rx'}:
+                    if len(params) != 2:
+                        raise ValueError(f"{gate_type} gate requires a qubit and a theta parameter.")
+                    qubit, theta = params
+                    if not isinstance(qubit, int) or qubit < 0 or qubit >= self.num_qubits:
+                        raise ValueError(f"Qubit index must be an integer between 0 and {self.num_qubits-1}.")
+                    if not (isinstance(theta, float) or isinstance(theta, int)):
+                        raise ValueError("Theta parameter must be a number.")
 
     def _create_circuit_instance(self):
         """Create the appropriate circuit instance based on platform."""

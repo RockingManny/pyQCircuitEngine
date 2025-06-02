@@ -230,6 +230,32 @@ To use `QuantumCircuitRunner`, ensure the following:
   - Circuit diagram saved as `results/sim_custom_circuit.png`.
   - Histogram saved as `results/sim_custom_results.png`, with outcome distribution dependent on the gates applied.
 
+### 6.4 Simulating Custom Circuits with Rotation Gates
+- **Objective**: Simulate a custom circuit including rotation gates with specified angles.
+- **Code**:
+  ```python
+  from pyQCircuitEngine.pyQCircuitEngine import QuantumCircuitRunner
+
+  custom_gates = [
+      ('h', 0),
+      ('ry', 0, 1.5708),  # ry(pi/2) on qubit 0
+  ]
+
+  runner = QuantumCircuitRunner(
+      platform='simulator',
+      num_qubits=1,
+      shots=1024,
+      gates=custom_gates,
+      filename_prefix='sim_rotation_test'
+  )
+  results = runner.run()
+  print("Time Complexities:", results['time_complexities'])
+  print("Runtimes (seconds):", results['runtimes'])
+  ```
+- **Expected Output**:
+  - Circuit diagram saved as `results/sim_rotation_test_circuit.png`.
+  - Histogram saved as `results/sim_rotation_test_results.png`, showing the effect of rotation gates on the qubit state.
+
 ## 7. Conclusion
 `QuantumCircuitRunner` offers a versatile and user-friendly tool for running quantum circuits, bridging the gap between theoretical quantum computing and practical implementation. By supporting both simulators and real quantum hardware, it empowers users to explore quantum phenomena and develop quantum algorithms with ease.
 
